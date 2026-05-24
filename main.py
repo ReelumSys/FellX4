@@ -60,65 +60,76 @@ def find_peaks(tt, intens, prominence=0.05):
 # ──────────────────────────────────────────────
 
 def parse_cif(content: str) -> dict | None:
-    """Parse basic CIF: unit cell, space group, atom sites."""
+    """Parse basic CIF: unit cell, space group, atom sites.
+    Supports both _atom_site.xxx and _atom_site_xxx notations."""
     cif = {}
+
     # Remove comments
-    lines = []
+    clean = []
     for line in content.splitlines():
         line = line.strip()
         if line.startswith("#"):
             continue
-        lines.append(line)
-    text = "\n".join(lines)
+        clean.append(line)
+    text = "\n".join(clean)
 
-    # Unit cell
-    for param in ["_cell_length_a", "_cell_length_b", "_cell_length_c",
-                   "_cell_angle_alpha", "_cell_angle_beta", "_cell_angle_gamma"]:
-        m = re.search(rf"{param}\s+([\d.]+)", text)
+    # --- Unit cell ---
+    for key in ["_cell_length_a", "_cell_length_b", "_cell_length_c",
+                "_cell_angle_alpha", "_cell_angle_beta", "_cell_angle_gamma"]:
+        m = re.search(rf"{re.escape(key)}\s+([\d.]+(?:\(\d+\))?)", text)
         if m:
-            cif[param] = float(m.group(1))
+            cif[key] = float(m.group(1).split("(")[0])
 
-    # Space group
+    # --- Space group ---
     m = re.search(r"_symmetry_space_group_name_H-M\s+'([^']+)'", text)
     if m:
         cif["space_group"] = m.group(1)
 
-    # Atom sites — parse loop
-    site_headers = []
-    site_data = []
-    # Find the _atom_site loop
-    loop_match = re.search(
-        r"loop_\s*\n(_atom_site\.[^\n]+\n)+",
-        text,
-    )
-    if loop_match:
-        # Manually parse: find lines starting with _atom_site.
-        lines2 = text.split("\n")
-        in_loop = False
-        headers = []
-        values = []
-        for line in lines2:
-            line_stripped = line.strip()
-            if line_stripped == "loop_":
-                in_loop = True
-                headers = []
-                values = []
-                continue
-            if in_loop:
-                if line_stripped.startswith("_atom_site."):
-                    headers.append(line_stripped)
-                elif headers and line_stripped:
-                    if line_stripped.startswith("_"):
-                        in_loop = False
-                    else:
-                        values.append(line_stripped.split())
-        if headers and values:
-            cif["_atom_site_headers"] = [h.split(".")[1] for h in headers]
-            atoms = []
-            for row in values:
-                if len(row) >= len(headers):
-                    atoms.append(dict(zip(cif["_atom_site_headers"], row)))
-            cif["atoms"] = atoms
+    # --- Atom sites: find loop_ block with _atom_site entries ---
+    # Normalise both underscore and dot variants to a common key
+    lines = text.split("\n")
+    in_loop = False
+    headers_raw = []
+    values = []
+    atom_site_prefix = None  # "_atom_site." or "_atom_site_"
+
+    for line in lines:
+        ls = line.strip()
+        if ls == "loop_":
+            in_loop = True
+            headers_raw = []
+            values = []
+            atom_site_prefix = None
+            continue
+
+        if in_loop:
+            if ls.startswith("_atom_site.") or ls.startswith("_atom_site_"):
+                headers_raw.append(ls)
+                if ls.startswith("_atom_site."):
+                    atom_site_prefix = "_atom_site."
+                else:
+                    atom_site_prefix = "_atom_site_"
+            elif headers_raw and ls:
+                if ls.startswith("_"):
+                    in_loop = False  # new data block started
+                else:
+                    # Split on whitespace, handle quoted strings
+                    values.append(ls.split())
+            elif not headers_raw and ls.startswith("_"):
+                in_loop = False
+
+    # Build atom list
+    if headers_raw and values:
+        # Normalise header keys: strip prefix
+        prefix = atom_site_prefix or "_atom_site."
+        header_keys = [h[len(prefix):] for h in headers_raw]
+
+        atoms = []
+        for row in values:
+            if len(row) >= len(header_keys):
+                atom = dict(zip(header_keys, row))
+                atoms.append(atom)
+        cif["atoms"] = atoms
 
     return cif if any(k in cif for k in ["_cell_length_a", "atoms"]) else None
 
