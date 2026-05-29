@@ -218,7 +218,7 @@ def plot_unit_cell(atoms, a, b, c, alpha, beta, gamma):
     from mpl_toolkits.mplot3d.art3d import Poly3DCollection
     corners_frac = [(0,0,0), (1,0,0), (1,1,0), (0,1,0),
                     (0,0,1), (1,0,1), (1,1,1), (0,1,1)]
-    corners = [frac_to_cart(c, a, b, c, alpha, beta, gamma) for c in corners_frac]
+    corners = [frac_to_cart(cr, a, b, c, alpha, beta, gamma) for cr in corners_frac]
     fig = plt.figure(figsize=(7, 6))
     ax = fig.add_subplot(111, projection="3d")
     idx = [(0,1),(1,2),(2,3),(3,0),(4,5),(5,6),(6,7),(7,4),(0,4),(1,5),(2,6),(3,7)]
