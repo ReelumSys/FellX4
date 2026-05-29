@@ -1117,14 +1117,22 @@ with tab5:
                         fig_wh.tight_layout()
                         st.pyplot(fig_wh)
 
-                        # Metrics
+                        # Metrics row 1: Scherrer
+                        c1_s, c2_s, c3_s, _ = st.columns(4)
+                        d_all = [d["D (nm)"] for d in wh_data]
+                        c1_s.metric("Mittl. D (Scherrer)", f"{np.mean(d_all):.1f} nm")
+                        c2_s.metric("Min D", f"{min(d_all):.1f} nm")
+                        c3_s.metric("Max D", f"{max(d_all):.1f} nm")
+
+                        # Metrics row 2: Williamson-Hall
+                        st.markdown("##### Williamson-Hall Ergebnisse")
                         c1_w, c2_w, c3_w, c4_w = st.columns(4)
-                        c1_w.metric("D (Scherrer, Einzel)", f"{mean_d_val:.1f} nm")
-                        c2_w.metric("D (W-H, aus Intercept)",
+                        c1_w.metric("D (W-H, aus Intercept)",
                                     f"{d_wh:.1f} nm" if d_wh > 0 else "—")
-                        c3_w.metric("Mikrodehnung ε", f"{strain:.6f}")
-                        c4_w.metric("R² (W-H Fit)",
+                        c2_w.metric("Mikrodehnung ε", f"{strain:.6f}")
+                        c3_w.metric("R² (W-H Fit)",
                                     f"{np.corrcoef(x_wh, y_wh)[0,1]**2:.4f}")
+                        c4_w.metric("Anzahl Reflexe", len(wh_data))
 
                         # Instrumental broadening hint
                         st.caption(
