@@ -708,6 +708,7 @@ with tab6:
                 st.session_state["riet_ref_a"] = ref_a
                 st.session_state["riet_ref_b"] = ref_b
                 st.session_state["riet_ref_c"] = ref_c
+                st.session_state["riet_bg_ord_stored"] = bg_order
                 st.rerun()
 
     # ─── Step 2: Show initial results (if calculated) ───
@@ -719,7 +720,7 @@ with tab6:
         raff_a = st.session_state.get("riet_ref_a", False)
         raff_b = st.session_state.get("riet_ref_b", False)
         raff_c = st.session_state.get("riet_ref_c", False)
-        bg_ord = st.session_state.get("riet_bg_order", 3)
+        bg_ord = st.session_state.get("riet_bg_ord_stored", 3)
 
         y_obs = np.array(intens_raw)
         res_init = y_obs - y_init
@@ -821,7 +822,7 @@ with tab6:
         raff_a = st.session_state.get("riet_ref_a", False)
         raff_b = st.session_state.get("riet_ref_b", False)
         raff_c = st.session_state.get("riet_ref_c", False)
-        bg_ord = st.session_state.get("riet_bg_order", 3)
+        bg_ord = st.session_state.get("riet_bg_ord_stored", 3)
 
         y_obs = np.array(intens_raw)
         res_ref = y_obs - y_ref
