@@ -297,7 +297,10 @@ def compute_structure_factors(
                 d = d_spacing(h, k, l, a, b, c, alpha, beta, gamma)
                 if d is None or d <= 0:
                     continue
-                theta = math.degrees(math.asin(wavelength / (2 * d)))
+                sintheta = wavelength / (2 * d)
+                if abs(sintheta) > 1:
+                    continue
+                theta = math.degrees(math.asin(sintheta))
                 two_theta = 2 * theta
                 if two_theta < 5 or two_theta > 150:
                     continue
