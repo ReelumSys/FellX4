@@ -708,7 +708,6 @@ with tab6:
                 st.session_state["riet_ref_a"] = ref_a
                 st.session_state["riet_ref_b"] = ref_b
                 st.session_state["riet_ref_c"] = ref_c
-                st.session_state["riet_bg_order"] = bg_order
                 st.rerun()
 
     # ─── Step 2: Show initial results (if calculated) ───
