@@ -407,6 +407,117 @@ def match_peaks_to_hkl(
 
 
 # ──────────────────────────────────────────────
+#  3D-Elementarzelle
+# ──────────────────────────────────────────────
+
+def frac_to_cart(frac, a, b, c, alpha, beta, gamma):
+    """Convert fractional (x,y,z) to Cartesian coordinates.
+    Standard orientation: a∥x, b in xy-plane."""
+    ca = math.cos(math.radians(alpha))
+    cb = math.cos(math.radians(beta))
+    cg = math.cos(math.radians(gamma))
+    sg = math.sin(math.radians(gamma))
+
+    # Basis vectors
+    ax = a
+    bx = b * cg
+    by = b * sg
+    cx = c * cb
+    cy = c * (ca - cb * cg) / sg
+    cz = c * math.sqrt(1 - cb**2 - ((ca - cb * cg) / sg)**2)
+
+    x, y, z = frac
+    return (
+        x * ax + y * bx + z * cx,
+        y * by + z * cy,
+        z * cz,
+    )
+
+
+def plot_unit_cell(atoms, a, b, c, alpha, beta, gamma):
+    """Matplotlib 3D plot of the unit cell with atoms."""
+    from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+
+    # 8 corners of the unit cell in fractional coordinates
+    corners_frac = [
+        (0,0,0), (1,0,0), (1,1,0), (0,1,0),
+        (0,0,1), (1,0,1), (1,1,1), (0,1,1),
+    ]
+    corners = [frac_to_cart(c, a, b, c, alpha, beta, gamma) for c in corners_frac]
+
+    def edges_from_corners(c):
+        """Return 12 edges of a hexahedron."""
+        idx = [(0,1),(1,2),(2,3),(3,0),(4,5),(5,6),(6,7),(7,4),(0,4),(1,5),(2,6),(3,7)]
+        return [(c[i], c[j]) for i, j in idx]
+
+    fig = plt.figure(figsize=(7, 6))
+    ax = fig.add_subplot(111, projection="3d")
+
+    # Draw edges
+    for p1, p2 in edges_from_corners(corners):
+        ax.plot([p1[0], p2[0]], [p1[1], p2[1]], [p1[2], p2[2]],
+                color="#1f77b4", lw=1.5)
+
+    # Shade cell faces (slightly transparent)
+    faces_idx = [(0,1,2,3),(4,5,6,7),(0,1,5,4),(2,3,7,6),(0,3,7,4),(1,2,6,5)]
+    face_verts = [[corners[i] for i in f] for f in faces_idx]
+    poly = Poly3DCollection(face_verts, alpha=0.05, facecolor="#1f77b4",
+                            edgecolor="none")
+    ax.add_collection3d(poly)
+
+    # Plot atoms
+    colors = {
+        "H": "#ffffff", "C": "#222222", "N": "#3050f8", "O": "#ff0d0d",
+        "Na": "#ab5cf2", "Mg": "#8aff00", "Al": "#bfa6a6", "Si": "#f0c8a0",
+        "P": "#ff8000", "S": "#ffff30", "Cl": "#1ff01f", "K": "#8f40d4",
+        "Ca": "#3dff00", "Ti": "#bfc2c7", "Fe": "#e06633", "Ni": "#50f050",
+        "Cu": "#c88033", "Zn": "#71d0a0", "Sr": "#00ff00", "Ba": "#00c900",
+        "Pb": "#575961",
+    }
+
+    for atom in atoms:
+        try:
+            fx = float(atom.get("fract_x", 0))
+            fy = float(atom.get("fract_y", 0))
+            fz = float(atom.get("fract_z", 0))
+            occ = float(atom.get("occupancy", 1.0))
+            match = re.match(r"([A-Za-z]+)", atom.get("type_symbol", "H"))
+            element = match.group(1) if match else "H"
+        except (ValueError, AttributeError):
+            continue
+
+        pos = frac_to_cart((fx, fy, fz), a, b, c, alpha, beta, gamma)
+        el_color = colors.get(element.capitalize(), "#888888")
+        size = 80 + 40 * (occ if occ <= 1 else 1)
+        ax.scatter(*pos, c=el_color, s=size, edgecolors="black",
+                   linewidths=0.3, alpha=0.85, zorder=10)
+
+    # Axis labels
+    a_vec = frac_to_cart((1.15, 0, 0), a, b, c, alpha, beta, gamma)
+    b_vec = frac_to_cart((0, 1.15, 0), a, b, c, alpha, beta, gamma)
+    c_vec = frac_to_cart((0, 0, 1.15), a, b, c, alpha, beta, gamma)
+    ax.text(*a_vec, "a", fontsize=12, fontweight="bold", color="#1f77b4")
+    ax.text(*b_vec, "b", fontsize=12, fontweight="bold", color="#1f77b4")
+    ax.text(*c_vec, "c", fontsize=12, fontweight="bold", color="#1f77b4")
+
+    # Equal aspect
+    all_pts = np.array(corners)
+    mx = np.max(np.abs(all_pts))
+    ax.set_xlim(-mx*0.1, mx*1.1)
+    ax.set_ylim(-mx*0.1, mx*1.1)
+    ax.set_zlim(-mx*0.1, mx*1.1)
+    ax.set_box_aspect([1, 1, 1])
+
+    ax.set_xlabel("x (Å)")
+    ax.set_ylabel("y (Å)")
+    ax.set_zlabel("z (Å)")
+    ax.set_title("Elementarzelle", fontsize=12, fontweight="bold")
+
+    fig.tight_layout()
+    return fig
+
+
+# ──────────────────────────────────────────────
 #  TABS
 # ──────────────────────────────────────────────
 
@@ -516,6 +627,12 @@ with tab3:
             )
             with st.expander("📄 Atompositionen"):
                 st.dataframe(crystal["atoms"], use_container_width=True)
+
+            if st.checkbox("🔬 3D-Elementarzelle anzeigen", value=True):
+                fig_cell = plot_unit_cell(
+                    crystal["atoms"], a, b, c, alpha, beta, gamma
+                )
+                st.pyplot(fig_cell)
         else:
             st.error("CIF konnte nicht vollständig geparst werden — brauche _cell_length_* und _atom_site_* Einträge.")
 
