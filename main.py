@@ -1036,39 +1036,102 @@ with tab5:
                     fwhm_df = [{k: r[k] for k in fwhm_cols} for r in fwhm_results]
                     st.dataframe(fwhm_df, use_container_width=True, hide_index=True)
 
-                    # ─── 📉 Scherrer Analysis ───────────────────
-                    st.markdown("### 📉 Scherrer-Analyse")
-                    scherrer_df = [{
+                    # ─── 📉 Scherrer & Williamson-Hall ───────────
+                    st.markdown("### 📉 Scherrer & Williamson-Hall")
+
+                    wh_data = [{
                         "Peak": r["Peak"],
                         "2θ (°)": r["2θ (°)"],
                         "FWHM (°)": r["FWHM (°)"],
+                        "FWHM (rad)": r["FWHM (rad)"],
                         "D (nm)": r["D (nm)"],
                     } for r in fwhm_results if r["D (nm)"] > 0]
 
-                    if scherrer_df:
-                        st.dataframe(scherrer_df, use_container_width=True, hide_index=True)
+                    if wh_data:
+                        st.dataframe(
+                            [{"Peak": d["Peak"], "2θ (°)": d["2θ (°)"],
+                              "FWHM (°)": d["FWHM (°)"], "D (nm)": d["D (nm)"]}
+                             for d in wh_data],
+                            use_container_width=True, hide_index=True
+                        )
 
-                        # Plot D vs 2θ
-                        fig_d, ax_d = plt.subplots(figsize=(8, 4))
-                        d_tt = [r["2θ (°)"] for r in scherrer_df]
-                        d_val = [r["D (nm)"] for r in scherrer_df]
-                        ax_d.scatter(d_tt, d_val, color="red", s=60, zorder=5)
-                        ax_d.plot(d_tt, d_val, color="red", lw=1, alpha=0.5)
-                        mean_d = np.mean(d_val)
-                        ax_d.axhline(mean_d, color="gray", ls="--", lw=1,
-                                     label=f"Mittel: {mean_d:.1f} nm")
-                        ax_d.set_xlabel("2θ (°)", fontsize=11)
-                        ax_d.set_ylabel("D (nm)", fontsize=11)
-                        ax_d.set_title("Kristallitgröße D vs. 2θ (Scherrer)", fontsize=12)
-                        ax_d.legend(fontsize=9)
-                        ax_d.grid(True, alpha=0.3)
-                        fig_d.tight_layout()
-                        st.pyplot(fig_d)
+                        # Prepare WH variables
+                        theta_arr = np.array([math.radians(d["2θ (°)"] / 2) for d in wh_data])
+                        beta_arr = np.array([d["FWHM (rad)"] for d in wh_data])
+                        x_wh = 4 * np.sin(theta_arr)            # 4 sinθ
+                        y_wh = beta_arr * np.cos(theta_arr)     # β cosθ
 
-                        c1_s, c2_s, c3_s = st.columns(3)
-                        c1_s.metric("Mittl. D", f"{np.mean(d_val):.1f} nm")
-                        c2_s.metric("Min D", f"{min(d_val):.1f} nm")
-                        c3_s.metric("Max D", f"{max(d_val):.1f} nm")
+                        # Linear fit: β cosθ = Kλ/D + 4ε sinθ
+                        coeffs = np.polyfit(x_wh, y_wh, 1)
+                        slope, intercept = coeffs
+                        d_wh = scherrer_K * fwhm_wl / intercept if intercept > 0 else 0
+                        strain = slope
+
+                        x_fit = np.linspace(min(x_wh) * 0.8, max(x_wh) * 1.2, 50)
+                        y_fit = np.polyval(coeffs, x_fit)
+
+                        # ── Row: D vs 2θ + FWHM vs 2θ side by side ──
+                        col_d, col_f = st.columns(2)
+
+                        with col_d:
+                            fig_d, ax_d = plt.subplots(figsize=(5, 4))
+                            ax_d.scatter([d["2θ (°)"] for d in wh_data],
+                                         [d["D (nm)"] for d in wh_data],
+                                         color="red", s=60, zorder=5)
+                            mean_d_val = np.mean([d["D (nm)"] for d in wh_data])
+                            ax_d.axhline(mean_d_val, color="gray", ls="--", lw=1,
+                                         label=f"Mittel: {mean_d_val:.1f} nm")
+                            ax_d.set_xlabel("2θ (°)", fontsize=10)
+                            ax_d.set_ylabel("D (nm)", fontsize=10)
+                            ax_d.set_title("Kristallitgröße D vs. 2θ", fontsize=11)
+                            ax_d.legend(fontsize=8)
+                            ax_d.grid(True, alpha=0.3)
+                            fig_d.tight_layout()
+                            st.pyplot(fig_d)
+
+                        with col_f:
+                            fig_f, ax_f = plt.subplots(figsize=(5, 4))
+                            ax_f.scatter([d["2θ (°)"] for d in wh_data],
+                                         [d["FWHM (°)"] for d in wh_data],
+                                         color="darkorange", s=60, zorder=5)
+                            ax_f.set_xlabel("2θ (°)", fontsize=10)
+                            ax_f.set_ylabel("FWHM (°)", fontsize=10)
+                            ax_f.set_title("FWHM vs. 2θ", fontsize=11)
+                            ax_f.grid(True, alpha=0.3)
+                            fig_f.tight_layout()
+                            st.pyplot(fig_f)
+
+                        # ── Williamson-Hall plot ──
+                        st.markdown("##### 🧱 Williamson-Hall: β·cosθ vs 4·sinθ")
+
+                        fig_wh, ax_wh = plt.subplots(figsize=(7, 5))
+                        ax_wh.scatter(x_wh, y_wh, color="darkgreen", s=70,
+                                      zorder=5, label="Daten")
+                        ax_wh.plot(x_fit, y_fit, color="red", lw=1.5,
+                                   label=f"Fit: y={slope:.4f}x+{intercept:.4f}")
+                        ax_wh.set_xlabel("4 sinθ", fontsize=11)
+                        ax_wh.set_ylabel("β cosθ (rad)", fontsize=11)
+                        ax_wh.set_title("Williamson-Hall Plot", fontsize=12)
+                        ax_wh.legend(fontsize=9)
+                        ax_wh.grid(True, alpha=0.3)
+                        fig_wh.tight_layout()
+                        st.pyplot(fig_wh)
+
+                        # Metrics
+                        c1_w, c2_w, c3_w, c4_w = st.columns(4)
+                        c1_w.metric("D (Scherrer, Einzel)", f"{mean_d_val:.1f} nm")
+                        c2_w.metric("D (W-H, aus Intercept)",
+                                    f"{d_wh:.1f} nm" if d_wh > 0 else "—")
+                        c3_w.metric("Mikrodehnung ε", f"{strain:.6f}")
+                        c4_w.metric("R² (W-H Fit)",
+                                    f"{np.corrcoef(x_wh, y_wh)[0,1]**2:.4f}")
+
+                        # Instrumental broadening hint
+                        st.caption(
+                            "β = gemessene FWHM (rad). Für korrigierte Werte "
+                            "β_korr² = β_gem² − β_inst² verwenden. "
+                            "β_inst aus Standard (LaB₆, Si) bestimmen."
+                        )
                     else:
                         st.info("Keine Kristallitgrößen berechnet (alle D=0?).")
 
