@@ -353,12 +353,16 @@ def compute_structure_factors(
 
                 F_sq = F_real**2 + F_imag**2
                 if F_sq > 0.001:
+                    phase_rad = math.atan2(F_imag, F_real)
                     raw_results.append({
                         "h": h, "k": k, "l": l,
                         "d (Å)": round(d, 4),
                         "2θ (°)": round(two_theta, 4),
                         "|F|²": round(F_sq, 2),
                         "|F|": round(math.sqrt(F_sq), 2),
+                        "F_real": round(F_real, 3),
+                        "F_imag": round(F_imag, 3),
+                        "φ (°)": round(math.degrees(phase_rad), 1),
                     })
 
     # Filter: nur Reflexe > min_f_sq_frac * max |F|²
@@ -484,8 +488,13 @@ with tab3:
     )
 
     hkl_range = st.slider("hkl-Suchbereich", 1, 10, 5, help="Maximaler Index für h, k, l")
+    tol = st.slider("Toleranz Δ2θ (°)", 0.05, 1.0, 0.3, 0.05,
+                    help="Maximale Abweichung für hkl-Zuordnung")
 
     crystal = None
+    cif_ok = False
+    a = b = c = alpha = beta = gamma = 0.0
+    sg = "—"
     if cif_file is not None:
         crystal = parse_cif(cif_file.read().decode("utf-8"))
         if crystal and "atoms" in crystal and "_cell_length_a" in crystal:
@@ -496,6 +505,7 @@ with tab3:
             beta = crystal["_cell_angle_beta"]
             gamma = crystal["_cell_angle_gamma"]
             sg = crystal.get("space_group", "—")
+            cif_ok = True
 
             st.success(
                 f"✅ CIF geladen: "
@@ -522,17 +532,18 @@ with tab3:
     )
 
     peaks = []
+    tt_raw, intens_raw = None, None
     if xrd_file is not None:
         xrd = parse_xy(xrd_file.read().decode("utf-8"))
         if xrd:
-            tt, intens = xrd
-            peaks = find_peaks(tt, intens, prominence=prominence)
+            tt_raw, intens_raw = xrd
+            peaks = find_peaks(tt_raw, intens_raw, prominence=prominence)
 
             fig_p, (ax_p, ax_peaks) = plt.subplots(
                 2, 1, figsize=(10, 5), sharex=True,
                 gridspec_kw={"height_ratios": [3, 1]},
             )
-            ax_p.plot(tt, intens, color="#1f77b4", lw=1.0)
+            ax_p.plot(tt_raw, intens_raw, color="#1f77b4", lw=1.0)
             peak_tt = [p[0] for p in peaks]
             peak_int = [p[1] for p in peaks]
             ax_p.scatter(peak_tt, peak_int, color="red", s=30, zorder=5, label=f"{len(peaks)} Peaks")
@@ -554,67 +565,211 @@ with tab3:
 
     st.markdown("---")
 
+    # ── Berechnung ────────────────────────────────────────────
     if st.button("🧮 hkl-Indizierung + Strukturfaktoren berechnen", type="primary"):
-        if crystal is None or "_cell_length_a" not in crystal or "atoms" not in crystal:
+        if crystal is None or not cif_ok:
             st.error("❌ Bitte zuerst eine gültige CIF-Datei hochladen.")
         elif not peaks:
             st.error("❌ Keine Peaks im Diffraktogramm — Datei hochladen oder Empfindlichkeit erhöhen.")
         else:
-            a = crystal["_cell_length_a"]
-            b = crystal["_cell_length_b"]
-            c = crystal["_cell_length_c"]
-            alpha = crystal["_cell_angle_alpha"]
-            beta = crystal["_cell_angle_beta"]
-            gamma = crystal["_cell_angle_gamma"]
-
             with st.spinner("Berechne hkl-Reflexe..."):
                 hkl_refs = compute_structure_factors(
                     crystal["atoms"], a, b, c, alpha, beta, gamma,
                     wavelength, (hkl_range, hkl_range, hkl_range),
                 )
 
-            st.success(
-                f"✅ {len(hkl_refs)} theoretische Reflexe im Bereich 5° ≤ 2θ ≤ 150° berechnet."
-            )
-
-            with st.expander("📋 Alle berechneten Reflexe"):
-                st.dataframe(hkl_refs, use_container_width=True, hide_index=True)
+            st.success(f"✅ {len(hkl_refs)} theoretische Reflexe berechnet.")
 
             # Match peaks to hkl
-            matched = match_peaks_to_hkl(peaks, hkl_refs, wavelength, tol=0.5)
-
-            st.markdown("### 🎯 Peak-Zuordnung (hkl)")
-            st.dataframe(matched, use_container_width=True, hide_index=True)
-
+            matched = match_peaks_to_hkl(peaks, hkl_refs, wavelength, tol=tol)
             matched_count = sum(1 for m in matched if m["h"] != "—")
-            st.info(f"{matched_count} von {len(matched)} Peaks konnten hkl zugeordnet werden.")
 
-            # Plot overlay
-            if hkl_refs:
-                fig_overlay, ax_o = plt.subplots(figsize=(10, 4))
-                # Experimental
-                if peaks:
-                    p_tt = [p[0] for p in peaks]
-                    p_int = [p[1] for p in peaks]
-                    # Normalize intensity to max ref |F|² for visual comparison
-                    if p_int:
-                        p_int_norm = np.array(p_int) / max(p_int) * 100
-                        ax_o.bar(p_tt, p_int_norm, width=0.08, color="red", alpha=0.5, label="Experiment")
+            # Store in session state for export
+            st.session_state["hkl_refs"] = hkl_refs
+            st.session_state["matched"] = matched
+            st.session_state["peaks"] = peaks
+            st.session_state["tt_raw"] = tt_raw
+            st.session_state["intens_raw"] = intens_raw
 
-                # Calculated reflections (stick diagram)
-                ref_tt = [r["2θ (°)"] for r in hkl_refs]
-                ref_f = [r["|F|²"] for r in hkl_refs]
-                if ref_f:
-                    ref_f_norm = np.array(ref_f) / max(ref_f) * 100
-                    ax_o.vlines(ref_tt, 0, ref_f_norm, color="#1f77b4", lw=1.5, alpha=0.8, label="Berechnet (|F|²)")
+            # ─── 📈 Annotated Pattern ──────────────────────────
+            st.markdown("### 📈 Annotiertes Diffraktogramm")
+            fig_ann, ax_ann = plt.subplots(figsize=(12, 5))
 
-                ax_o.set_xlabel("2θ (°)", fontsize=11)
-                ax_o.set_ylabel("Norm. Intensität / |F|²", fontsize=11)
-                ax_o.set_title("Experiment vs. Berechnet (Stick-Diagramm)", fontsize=12)
-                ax_o.legend(fontsize=9)
-                ax_o.grid(True, alpha=0.3)
-                fig_overlay.tight_layout()
-                st.pyplot(fig_overlay)
+            # Experimental full pattern
+            if tt_raw is not None and intens_raw is not None:
+                ax_ann.plot(tt_raw, intens_raw, color="#1f77b4", lw=1.0, label="Experiment")
+                ax_ann.set_xlabel("2θ (°)", fontsize=11)
+                ax_ann.set_ylabel("Intensität (a.u.)", fontsize=11)
+
+            # Calculated sticks
+            ref_tt = [r["2θ (°)"] for r in hkl_refs]
+            ref_f = [r["|F|²"] for r in hkl_refs]
+            if ref_f:
+                ref_f_norm = np.array(ref_f) / max(ref_f) * 100
+                ax_ann.vlines(ref_tt, 0, ref_f_norm, color="#1f77b4", lw=1.5,
+                              alpha=0.6, label="Berechnet (|F|²)")
+
+            # Matched peaks with hkl labels
+            for m in matched:
+                if m["h"] != "—":
+                    tt_m = m["2θ obs"]
+                    i_m = m["Intensität"]
+                    label = f"{m['h']}{m['k']}{m['l']}"
+                    # Scale marker size by intensity
+                    ax_ann.scatter(tt_m, i_m, color="red", s=40, zorder=5)
+                    ax_ann.annotate(label, (tt_m, i_m),
+                                    textcoords="offset points", xytext=(0, 12),
+                                    fontsize=7, ha="center", rotation=90,
+                                    color="darkred", fontweight="bold")
+
+            ax_ann.set_title("Diffraktogramm mit hkl-Zuordnung", fontsize=12)
+            ax_ann.legend(fontsize=9)
+            ax_ann.grid(True, alpha=0.3)
+            fig_ann.tight_layout()
+            st.pyplot(fig_ann)
+
+            st.info(f"{matched_count}/{len(matched)} Peaks zugeordnet ({len(hkl_refs)} berechnete Reflexe)")
+
+            # ─── 📋 Indexed Peaks & F(hkl) ────────────────────
+            st.markdown("### 📋 Indizierte Peaks & F(hkl)")
+            display_cols = ["2θ obs", "h", "k", "l", "d (Å)", "Δ2θ",
+                            "|F|²", "|F|", "Intensität"]
+            matched_df = [{k: m[k] for k in display_cols if k in m} for m in matched]
+            st.dataframe(matched_df, use_container_width=True, hide_index=True)
+
+            # ─── 🌀 Phase / Argand ─────────────────────────────
+            st.markdown("### 🌀 Argand-Diagramm (komplexe Ebene)")
+            fig_arg, ax_arg = plt.subplots(figsize=(6, 6))
+
+            # Draw axes
+            ax_arg.axhline(0, color="gray", lw=0.8)
+            ax_arg.axvline(0, color="gray", lw=0.8)
+
+            # Find matching hkl_refs
+            matched_hkl_set = {(m["h"], m["k"], m["l"])
+                               for m in matched if m["h"] != "—"}
+
+            for r in hkl_refs:
+                key = (r["h"], r["k"], r["l"])
+                matched_flag = key in matched_hkl_set
+                fr = r.get("F_real", 0)
+                fi = r.get("F_imag", 0)
+                color = "red" if matched_flag else "#1f77b4"
+                size = 60 if matched_flag else 20
+                alpha = 1.0 if matched_flag else 0.4
+                ax_arg.scatter(fr, fi, c=color, s=size, alpha=alpha, zorder=5)
+                if matched_flag:
+                    ax_arg.annotate(f"{r['h']}{r['k']}{r['l']}",
+                                    (fr, fi), fontsize=6, ha="center", va="bottom")
+
+            # Circle guides
+            max_r = max(math.sqrt(r.get("F_real", 0)**2 + r.get("F_imag", 0)**2)
+                        for r in hkl_refs) * 1.1
+            for r_val in [max_r * 0.25, max_r * 0.5, max_r * 0.75, max_r]:
+                circle = plt.Circle((0, 0), r_val, fill=False, ls="--",
+                                    lw=0.5, color="gray", alpha=0.3)
+                ax_arg.add_patch(circle)
+
+            ax_arg.set_xlim(-max_r, max_r)
+            ax_arg.set_ylim(-max_r, max_r)
+            ax_arg.set_aspect("equal")
+            ax_arg.set_xlabel("Re(F) / F_real", fontsize=11)
+            ax_arg.set_ylabel("Im(F) / F_imag", fontsize=11)
+            ax_arg.set_title("Argand-Diagramm F(hkl)", fontsize=12)
+            ax_arg.grid(True, alpha=0.3)
+            fig_arg.tight_layout()
+            st.pyplot(fig_arg)
+
+            # ─── 📊 d-spacing Quality ──────────────────────────
+            st.markdown("### 📊 d-spacing Abgleich")
+
+            quality_data = []
+            for m in matched:
+                if m["h"] != "—":
+                    # Find the calculated ref for this peak
+                    for r in hkl_refs:
+                        if r["h"] == m["h"] and r["k"] == m["k"] and r["l"] == m["l"]:
+                            d_obs = m.get("d (Å)", 0)
+                            d_calc = r["d (Å)"]
+                            delta_d = abs(d_obs - d_calc)
+                            delta_d_over_d = delta_d / d_calc * 100 if d_calc else 0
+                            quality_data.append({
+                                "hkl": f"{m['h']}{m['k']}{m['l']}",
+                                "d_obs (Å)": d_obs,
+                                "d_calc (Å)": d_calc,
+                                "Δd (Å)": round(delta_d, 5),
+                                "Δd/d (%)": round(delta_d_over_d, 3),
+                                "2θ_obs": m["2θ obs"],
+                                "2θ_calc": r["2θ (°)"],
+                                "Δ2θ": m.get("Δ2θ", "—"),
+                            })
+                            break
+
+            if quality_data:
+                st.dataframe(quality_data, use_container_width=True, hide_index=True)
+
+                # Statistics
+                delta_d_vals = [q["Δd (Å)"] for q in quality_data]
+                delta_d_over_d = [q["Δd/d (%)"] for q in quality_data]
+                mean_dd = np.mean(delta_d_vals)
+                max_dd = max(delta_d_vals)
+                rms_dd = math.sqrt(np.mean(np.array(delta_d_vals)**2))
+
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Gelistete Reflexe", len(quality_data))
+                col2.metric("Mittl. Δd", f"{mean_dd:.5f} Å")
+                col3.metric("RMS Δd", f"{rms_dd:.5f} Å")
+                col4.metric("Max Δd", f"{max_dd:.5f} Å")
+
+                # Histogram of Δd/d
+                fig_hist, ax_hist = plt.subplots(figsize=(8, 3))
+                ax_hist.hist(delta_d_over_d, bins=10, color="#1f77b4",
+                             edgecolor="white", alpha=0.7)
+                ax_hist.axvline(np.mean(delta_d_over_d), color="red", ls="--",
+                                lw=1.5, label=f"Mittel: {np.mean(delta_d_over_d):.3f}%")
+                ax_hist.set_xlabel("Δd/d (%)", fontsize=11)
+                ax_hist.set_ylabel("Anzahl Reflexe", fontsize=11)
+                ax_hist.set_title("d-spacing Abweichung", fontsize=12)
+                ax_hist.legend(fontsize=9)
+                ax_hist.grid(True, alpha=0.3)
+                fig_hist.tight_layout()
+                st.pyplot(fig_hist)
+            else:
+                st.info("Keine zugeordneten Reflexe für Qualitätsanalyse.")
+
+            # ─── 🔬 Full HKL Table ─────────────────────────────
+            st.markdown("### 🔬 Vollständige HKL-Tabelle")
+            full_cols = ["h", "k", "l", "d (Å)", "2θ (°)",
+                         "|F|²", "|F|", "F_real", "F_imag", "φ (°)"]
+            full_df = [{k: r[k] for k in full_cols} for r in hkl_refs]
+            st.dataframe(full_df, use_container_width=True, hide_index=True)
+
+            # ─── 💾 Export ─────────────────────────────────────
+            st.markdown("### 💾 Export")
+            import io, csv, base64
+
+            col_csv, col_txt = st.columns(2)
+            with col_csv:
+                buf = io.StringIO()
+                writer = csv.DictWriter(buf, fieldnames=full_cols)
+                writer.writeheader()
+                writer.writerows(full_df)
+                csv_str = buf.getvalue()
+                b64 = base64.b64encode(csv_str.encode()).decode()
+                href = f'<a href="data:text/csv;base64,{b64}" download="hkl_reflections.csv">📥 CSV herunterladen (alle Reflexe)</a>'
+                st.markdown(href, unsafe_allow_html=True)
+
+            with col_txt:
+                match_cols = ["2θ obs", "h", "k", "l", "d (Å)", "Δ2θ", "|F|²", "Intensität"]
+                match_df_export = [{k: m.get(k, "—") for k in match_cols} for m in matched]
+                buf2 = io.StringIO()
+                w2 = csv.DictWriter(buf2, fieldnames=match_cols)
+                w2.writeheader()
+                w2.writerows(match_df_export)
+                txt_str = buf2.getvalue()
+                b64_2 = base64.b64encode(txt_str.encode()).decode()
+                href2 = f'<a href="data:text/csv;base64,{b64_2}" download="indexed_peaks.csv">📥 CSV herunterladen (indizierte Peaks)</a>'
+                st.markdown(href2, unsafe_allow_html=True)
 
 # ==================== TAB 4 ====================
 with tab4:
