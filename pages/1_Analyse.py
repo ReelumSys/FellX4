@@ -841,6 +841,71 @@ with tab6:
         if raff_c: pdata.append({"Parameter": "c (Å)", "Initial": f"{c:.4f}", "Verfeinert": f"{x_ref[idx]:.4f}"}); idx += 1
         st.dataframe(pdata, use_container_width=True, hide_index=True)
 
+        st.markdown("### 🎛️ Manuelle Anpassung")
+        st.caption("Werte ändern und 'Pattern aktualisieren' klicken")
+        col_m1, col_m2, col_m3 = st.columns(3)
+        with col_m1:
+            m_scale = st.number_input("Skalenfaktor", value=float(x_ref[0]), format="%.4f", key="m_scale")
+            m_zshift = st.number_input("Zero-Shift (°)", value=float(x_ref[1]), format="%.4f", key="m_zshift")
+        with col_m2:
+            m_U = st.number_input("Caglioti U", value=float(x_ref[2]), format="%.5f", key="m_U")
+            m_V = st.number_input("Caglioti V", value=float(x_ref[3]), format="%.5f", key="m_V")
+        with col_m3:
+            m_W = st.number_input("Caglioti W", value=float(x_ref[4]), format="%.5f", key="m_W")
+
+        # Editable bg coeffs
+        bg_start = 5 + (1 if raff_a else 0) + (1 if raff_b else 0) + (1 if raff_c else 0)
+        bg_ref = x_ref[bg_start:bg_start + bg_ord + 1]
+        bg_new_str = st.text_input(f"Background-Koeffizienten (B₀...B{bg_ord})",
+                                    value=",".join(f"{v:.2f}" for v in bg_ref), key="riet_bg_edit")
+        try:
+            bg_new = [float(x.strip()) for x in bg_new_str.split(",")]
+            if len(bg_new) != bg_ord + 1:
+                bg_new = None
+        except ValueError:
+            bg_new = None
+
+        # Lattice params (if refined)
+        col_l1, col_l2, col_l3 = st.columns(3)
+        lat_idx = 5
+        if raff_a:
+            with col_l1:
+                m_a = st.number_input("a (Å)", value=float(x_ref[lat_idx]), format="%.4f", key="m_a")
+            lat_idx += 1
+        else:
+            m_a = a
+        if raff_b:
+            with col_l2:
+                m_b = st.number_input("b (Å)", value=float(x_ref[lat_idx]), format="%.4f", key="m_b")
+            lat_idx += 1
+        else:
+            m_b = b
+        if raff_c:
+            with col_l3:
+                m_c = st.number_input("c (Å)", value=float(x_ref[lat_idx]), format="%.4f", key="m_c")
+            lat_idx += 1
+        else:
+            m_c = c
+
+        if st.button("🔄 Pattern aktualisieren", key="riet_update"):
+            if bg_new is not None:
+                # Build new param vector
+                x_manual = [m_scale, m_zshift, m_U, m_V, m_W]
+                if raff_a: x_manual.append(m_a)
+                if raff_b: x_manual.append(m_b)
+                if raff_c: x_manual.append(m_c)
+                x_manual += bg_new
+
+                y_manual = riet_calc_pattern(x_manual, np.array(tt_raw), hkl_refs_r, bg_ord,
+                                              raff_a, raff_b, raff_c, a, b, c,
+                                              wavelength, alpha, beta, gamma)
+                st.session_state["riet_y_ref"] = y_manual
+                st.session_state["riet_x_ref"] = x_manual
+                st.session_state["riet_chi2_ref"] = np.sum((np.array(intens_raw) - y_manual)**2 / (np.array(intens_raw) + 1))
+                st.rerun()
+            else:
+                st.error("Ungültige Background-Koeffizienten")
+
         # ─── Final Pattern ───
         st.markdown("### 📈 Finales Pattern")
         fig_rf, (ax_rf, ax_df) = plt.subplots(2, 1, figsize=(12, 5), sharex=True,
