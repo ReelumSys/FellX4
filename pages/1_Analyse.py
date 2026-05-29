@@ -761,11 +761,8 @@ with tab6:
                     # Build varying mask
                     varying = [True] * 5
                     if raff_a: varying.append(True)
-                    else: varying.append(False)
                     if raff_b: varying.append(True)
-                    else: varying.append(False)
                     if raff_c: varying.append(True)
-                    else: varying.append(False)
                     varying += [ref_bg] * (bg_ord + 1)
 
                     x0_var = [x0[i] for i, v in enumerate(varying) if v]
