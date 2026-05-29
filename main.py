@@ -45,13 +45,38 @@ def plot_xy(tt, intens, title="Diffraktogramm", color="#1f77b4", ax=None):
 
 
 def find_peaks(tt, intens, prominence=0.05):
-    """Simple peak detection: find local maxima above prominence * max(intensity)."""
-    arr = np.array(intens)
-    threshold = prominence * np.max(arr)
-    peaks_idx = []
-    for i in range(1, len(arr) - 1):
-        if arr[i] > arr[i - 1] and arr[i] > arr[i + 1] and arr[i] > threshold:
-            peaks_idx.append(i)
+    """Peak detection with scipy.signal.find_peaks.
+    prominence = minimal relative prominence (fraction of max intensity).
+    Returns list of (2theta, intensity) tuples."""
+    from scipy.signal import find_peaks as sp_find_peaks
+    from scipy.ndimage import gaussian_filter1d
+
+    arr = np.array(intens, dtype=float)
+    # Sanity: flat/empty data
+    if np.max(arr) == 0:
+        return []
+
+    # Gaussian smoothing (sigma=1.5 px) to reduce noise before peak detection
+    smoothed = gaussian_filter1d(arr, sigma=1.5)
+
+    # Absolute prominence threshold
+    abs_prominence = prominence * np.max(arr)
+
+    # Minimum distance between peaks (in data points, ~0.5° 2θ)
+    # Use median step size as reference
+    if len(tt) > 1:
+        step = np.median(np.diff(tt))
+        distance = max(3, int(0.5 / step))  # ~0.5° 2θ minimum separation
+    else:
+        distance = 3
+
+    peaks_idx, props = sp_find_peaks(
+        smoothed,
+        prominence=abs_prominence,
+        distance=distance,
+        width=1,  # at least 1 data point wide
+    )
+
     return [(tt[i], intens[i]) for i in peaks_idx]
 
 
