@@ -530,26 +530,12 @@ with tab5:
     st.markdown("### 📐 FWHM-Diffraktogramm-Analyzer")
     st.markdown("Peak-Fitting, FWHM-Extraktion, Scherrer-Kristallitgröße")
 
-    fwhm_file = st.file_uploader("XRD-Datei (.xy, .txt, .csv)", type=["xy", "txt", "csv"], key="fwhm")
     fwhm_wl = st.number_input("λ (Å)", value=wavelength, format="%.4f")
     fwhm_prom = st.slider("Peak-Empfindlichkeit", 0.0, 0.5, 0.05, 0.01, key="fwhm_prom")
     scherrer_K = st.number_input("Scherrer-K (Formfaktor)", value=0.9, format="%.2f")
 
-    src = fwhm_file if fwhm_file is not None else None
-    if src is None:
-        # Use the loaded XRD as default
-        if st.checkbox("Aktuelles Diffraktogramm verwenden", value=True):
-            tt_fwhm, intens_fwhm = tt_raw, intens_raw
-            fwhm_peaks = find_peaks(tt_fwhm, intens_fwhm, prominence=fwhm_prom)
-        else:
-            tt_fwhm, intens_fwhm, fwhm_peaks = None, None, []
-    else:
-        data = parse_xy(src.read().decode("utf-8"))
-        if data:
-            tt_fwhm, intens_fwhm = data
-            fwhm_peaks = find_peaks(tt_fwhm, intens_fwhm, prominence=fwhm_prom)
-        else:
-            tt_fwhm, intens_fwhm, fwhm_peaks = None, None, []
+    tt_fwhm, intens_fwhm = tt_raw, intens_raw
+    fwhm_peaks = find_peaks(tt_fwhm, intens_fwhm, prominence=fwhm_prom)
 
     if tt_fwhm is not None and intens_fwhm is not None:
         if len(fwhm_peaks) < 2:
