@@ -522,11 +522,12 @@ def plot_unit_cell(atoms, a, b, c, alpha, beta, gamma):
 #  TABS
 # ──────────────────────────────────────────────
 
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📁 Diffraktogramm",
     "📊 Vergleich + Subtraktion",
     "🔷 HKL + Strukturfaktoren",
     "✏️ Manuelle Eingabe",
+    "📐 FWHM + Scherrer",
 ])
 
 # ==================== TAB 1 ====================
@@ -902,5 +903,241 @@ with tab4:
                 st.dataframe({"2θ (°)": tt, "Intensität": intens}, use_container_width=True)
         else:
             st.error("Keine gültigen Zahlenpaare.")
+
+# ==================== TAB 5: FWHM + Scherrer ====================
+with tab5:
+    st.markdown("### 📐 FWHM-Diffraktogramm-Analyzer")
+    st.markdown("Peak-Fitting, FWHM-Extraktion, Scherrer-Kristallitgröße")
+
+    fwhm_file = st.file_uploader(
+        "XRD-Datei (.xy, .txt, .csv)", type=["xy", "txt", "csv"], key="fwhm"
+    )
+    fwhm_wl = st.number_input(
+        "λ (Å)", value=1.5406, format="%.4f",
+        help="Cu Kα = 1.5406, Mo Kα = 0.7107"
+    )
+    fwhm_prominence = st.slider("Peak-Empfindlichkeit", 0.0, 0.5, 0.05, 0.01)
+    scherrer_K = st.number_input("Scherrer-K (Formfaktor)", value=0.9, format="%.2f")
+
+    if fwhm_file is not None:
+        data = parse_xy(fwhm_file.read().decode("utf-8"))
+        if data:
+            tt, intens = data
+            peaks = find_peaks(tt, intens, prominence=fwhm_prominence)
+
+            if len(peaks) < 2:
+                st.warning("Weniger als 2 Peaks gefunden — evtl. Empfindlichkeit erhöhen.")
+            else:
+                from scipy.optimize import curve_fit
+
+                def gauss(x, A, mu, sigma, bg):
+                    return A * np.exp(-0.5 * ((x - mu) / sigma)**2) + bg
+
+                fwhm_results = []
+                fit_curves = []
+                tt_arr = np.array(tt)
+                intens_arr = np.array(intens)
+
+                # Sort peaks by 2θ
+                peaks_sorted = sorted(peaks, key=lambda p: p[0])
+
+                for idx, (p_tt, p_int) in enumerate(peaks_sorted):
+                    # Window: ±2° around peak or to next/prev peak
+                    half_window = 2.0
+                    if idx > 0:
+                        half_window = min(half_window, (p_tt - peaks_sorted[idx-1][0]) * 0.6)
+                    if idx < len(peaks_sorted) - 1:
+                        half_window = min(half_window, (peaks_sorted[idx+1][0] - p_tt) * 0.6)
+
+                    mask = (tt_arr >= p_tt - half_window) & (tt_arr <= p_tt + half_window)
+                    x_data = tt_arr[mask]
+                    y_data = intens_arr[mask]
+
+                    if len(x_data) < 5:
+                        continue
+
+                    # Initial guess
+                    bg0 = np.min(y_data)
+                    A0 = np.max(y_data) - bg0
+                    sigma0 = 0.1
+                    try:
+                        popt, _ = curve_fit(
+                            gauss, x_data, y_data,
+                            p0=[A0, p_tt, sigma0, bg0],
+                            maxfev=2000,
+                        )
+                        A_fit, mu_fit, sigma_fit, bg_fit = popt
+
+                        if sigma_fit <= 0 or A_fit <= 0:
+                            continue
+
+                        fwhm = 2 * math.sqrt(2 * math.log(2)) * sigma_fit
+                        fwhm_rad = math.radians(fwhm)
+
+                        # Scherrer
+                        theta_rad = math.radians(mu_fit / 2)
+                        D = scherrer_K * fwhm_wl / (fwhm_rad * math.cos(theta_rad)) if fwhm_rad > 0 else 0
+
+                        # R²
+                        residuals = y_data - gauss(x_data, *popt)
+                        ss_res = np.sum(residuals**2)
+                        ss_tot = np.sum((y_data - np.mean(y_data))**2)
+                        r_sq = 1 - ss_res / ss_tot if ss_tot > 0 else 0
+
+                        fwhm_results.append({
+                            "Peak": idx + 1,
+                            "2θ (°)": round(mu_fit, 4),
+                            "Intensität": round(A_fit + bg_fit, 1),
+                            "FWHM (°)": round(fwhm, 4),
+                            "FWHM (rad)": round(fwhm_rad, 6),
+                            "σ": round(sigma_fit, 4),
+                            "R²": round(r_sq, 4),
+                            "D (nm)": round(D, 2) if D > 0 else 0,
+                        })
+                        fit_curves.append((x_data, gauss(x_data, *popt), mu_fit))
+
+                    except (RuntimeError, ValueError):
+                        continue
+
+                if not fwhm_results:
+                    st.error("Keine Peaks konnten gefittet werden.")
+                else:
+                    st.success(f"**{len(fwhm_results)} Peaks gefittet**")
+
+                    # Stats row
+                    fwhm_vals = [r["FWHM (°)"] for r in fwhm_results]
+                    d_vals = [r["D (nm)"] for r in fwhm_results if r["D (nm)"] > 0]
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Peaks gefunden & gefittet", len(fwhm_results))
+                    c2.metric("Mittl. FWHM (°)", f"{np.mean(fwhm_vals):.4f}")
+                    c3.metric("Min FWHM (°)", f"{min(fwhm_vals):.4f}")
+                    c4.metric("Max FWHM (°)", f"{max(fwhm_vals):.4f}")
+
+                    # ─── 📈 Diffractogram + Fits ────────────────
+                    st.markdown("### 📈 Diffraktogramm + Fits")
+                    fig_fit, ax_fit = plt.subplots(figsize=(12, 5))
+                    ax_fit.plot(tt, intens, color="#1f77b4", lw=0.8,
+                                label="Experiment", alpha=0.7)
+                    for xf, yf, mu in fit_curves:
+                        ax_fit.plot(xf, yf, color="red", lw=1.5)
+                        ax_fit.axvline(mu, color="red", ls="--", lw=0.5, alpha=0.4)
+                    ax_fit.set_xlabel("2θ (°)", fontsize=11)
+                    ax_fit.set_ylabel("Intensität", fontsize=11)
+                    ax_fit.set_title("Diffraktogramm mit Gauß-Fits", fontsize=12)
+                    ax_fit.legend(["Experiment", "Gauß-Fit", "Peak-Zentrum"], fontsize=8)
+                    ax_fit.grid(True, alpha=0.3)
+                    fig_fit.tight_layout()
+                    st.pyplot(fig_fit)
+
+                    # ─── 📊 FWHM Results ────────────────────────
+                    st.markdown("### 📊 FWHM-Ergebnisse")
+                    fwhm_cols = ["Peak", "2θ (°)", "Intensität", "FWHM (°)",
+                                 "FWHM (rad)", "σ", "R²", "D (nm)"]
+                    fwhm_df = [{k: r[k] for k in fwhm_cols} for r in fwhm_results]
+                    st.dataframe(fwhm_df, use_container_width=True, hide_index=True)
+
+                    # ─── 📉 Scherrer Analysis ───────────────────
+                    st.markdown("### 📉 Scherrer-Analyse")
+                    scherrer_df = [{
+                        "Peak": r["Peak"],
+                        "2θ (°)": r["2θ (°)"],
+                        "FWHM (°)": r["FWHM (°)"],
+                        "D (nm)": r["D (nm)"],
+                    } for r in fwhm_results if r["D (nm)"] > 0]
+
+                    if scherrer_df:
+                        st.dataframe(scherrer_df, use_container_width=True, hide_index=True)
+
+                        # Plot D vs 2θ
+                        fig_d, ax_d = plt.subplots(figsize=(8, 4))
+                        d_tt = [r["2θ (°)"] for r in scherrer_df]
+                        d_val = [r["D (nm)"] for r in scherrer_df]
+                        ax_d.scatter(d_tt, d_val, color="red", s=60, zorder=5)
+                        ax_d.plot(d_tt, d_val, color="red", lw=1, alpha=0.5)
+                        mean_d = np.mean(d_val)
+                        ax_d.axhline(mean_d, color="gray", ls="--", lw=1,
+                                     label=f"Mittel: {mean_d:.1f} nm")
+                        ax_d.set_xlabel("2θ (°)", fontsize=11)
+                        ax_d.set_ylabel("D (nm)", fontsize=11)
+                        ax_d.set_title("Kristallitgröße D vs. 2θ (Scherrer)", fontsize=12)
+                        ax_d.legend(fontsize=9)
+                        ax_d.grid(True, alpha=0.3)
+                        fig_d.tight_layout()
+                        st.pyplot(fig_d)
+
+                        c1_s, c2_s, c3_s = st.columns(3)
+                        c1_s.metric("Mittl. D", f"{np.mean(d_val):.1f} nm")
+                        c2_s.metric("Min D", f"{min(d_val):.1f} nm")
+                        c3_s.metric("Max D", f"{max(d_val):.1f} nm")
+                    else:
+                        st.info("Keine Kristallitgrößen berechnet (alle D=0?).")
+
+                    # ─── 🔬 Individual Peaks ────────────────────
+                    st.markdown("### 🔬 Einzelne Peaks")
+                    n_peaks = len(fwhm_results)
+                    # Show in a grid: 2 peaks per row
+                    cols_per_row = 2
+                    for row_start in range(0, n_peaks, cols_per_row):
+                        cols = st.columns(cols_per_row)
+                        for j in range(cols_per_row):
+                            pi = row_start + j
+                            if pi >= n_peaks:
+                                break
+                            r = fwhm_results[pi]
+                            with cols[j]:
+                                # Extract the fit curve for this peak
+                                _, xf_plot, _ = fit_curves[pi]
+
+                                # Find corresponding data window
+                                mu = r["2θ (°)"]
+                                mask = (tt_arr >= mu - 2) & (tt_arr <= mu + 2)
+                                xw = tt_arr[mask]
+                                yw = intens_arr[mask]
+
+                                if len(xw) < 3:
+                                    continue
+
+                                fig_pi, ax_pi = plt.subplots(figsize=(5, 3))
+                                ax_pi.plot(xw, yw, color="#1f77b4", lw=1, label="Data")
+                                # Re-fit just for this window for the plot
+                                mask2 = (tt_arr >= mu - 1.5) & (tt_arr <= mu + 1.5)
+                                xw2 = tt_arr[mask2]
+                                yw2 = intens_arr[mask2]
+                                if len(xw2) >= 5:
+                                    try:
+                                        popt2, _ = curve_fit(
+                                            gauss, xw2, yw2,
+                                            p0=[r["Intensität"], mu, 0.1, np.min(yw2)],
+                                            maxfev=2000
+                                        )
+                                        ax_pi.plot(xw2, gauss(xw2, *popt2), "red",
+                                                   lw=1.5, label="Fit")
+                                    except Exception:
+                                        pass
+                                ax_pi.axvline(mu, color="red", ls="--", lw=0.8, alpha=0.5)
+                                ax_pi.set_title(f"Peak {r['Peak']}: {mu:.2f}°\n"
+                                                f"FWHM={r['FWHM (°)']:.4f}°  "
+                                                f"D={r['D (nm)']:.1f}nm",
+                                                fontsize=9)
+                                ax_pi.set_xlabel("2θ (°)", fontsize=8)
+                                ax_pi.set_ylabel("Intensität", fontsize=8)
+                                ax_pi.tick_params(labelsize=7)
+                                ax_pi.grid(True, alpha=0.3)
+                                fig_pi.tight_layout()
+                                st.pyplot(fig_pi)
+
+                    # ─── 💾 Export ─────────────────────────────
+                    st.markdown("### 💾 Export")
+                    import io, csv, base64
+                    buf = io.StringIO()
+                    w = csv.DictWriter(buf, fieldnames=fwhm_cols)
+                    w.writeheader()
+                    w.writerows(fwhm_df)
+                    b64 = base64.b64encode(buf.getvalue().encode()).decode()
+                    href = f'<a href="data:text/csv;base64,{b64}" download="fwhm_results.csv">📥 FWHM-Ergebnisse als CSV</a>'
+                    st.markdown(href, unsafe_allow_html=True)
+
+        else:
+            st.error("Datei konnte nicht geparst werden.")
 
 st.caption("FellX4 — mit HKL-Suche & Strukturfaktoren 🚀🔷")
