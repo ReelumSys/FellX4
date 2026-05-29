@@ -310,12 +310,13 @@ with col_back:
 # ──────────────────────────────────────────────
 #  TABS
 # ──────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📁 Diffraktogramm",
     "📊 Vergleich + Subtraktion",
     "🔷 HKL + Strukturfaktoren",
     "✏️ Manuelle Eingabe",
     "📐 FWHM + Scherrer",
+    "🧪 Rietveld",
 ])
 
 # ==================== TAB 1 ====================
@@ -702,5 +703,321 @@ with tab5:
                 b64 = base64.b64encode(buf.getvalue().encode()).decode()
                 st.markdown(f'<a href="data:text/csv;base64,{b64}" download="fwhm_results.csv">📥 FWHM-Ergebnisse als CSV</a>',
                             unsafe_allow_html=True)
+
+# ==================== TAB 6: Rietveld ====================
+with tab6:
+    st.markdown("### 🧪 Rietveld-Verfeinerung (vereinfacht)")
+    st.markdown("""
+    Full-Pattern-Fitting: Startmodell aus CIF → berechne gesamtes Diffraktogramm
+    → optimiere Parameter per Least-Squares.
+
+    **Hinweis:** Für FullProf/GSAS-Export bitte CIF + .xy separat verwenden.
+    """)
+
+    # ─── Parameter ───
+    col_r1, col_r2, col_r3 = st.columns(3)
+    with col_r1:
+        riet_hkl = st.slider("hkl-Bereich", 1, 10, 5, key="riet_hkl")
+        riet_scale = st.number_input("Skalenfaktor", value=1.0, format="%.4f", key="riet_scale",
+                                      help="Overall scale factor between I_calc and I_obs")
+    with col_r2:
+        riet_zshift = st.number_input("Zero-Shift (°)", value=0.0, format="%.4f", key="riet_zshift",
+                                       help="Global 2θ offset")
+        riet_U = st.number_input("Caglioti U", value=0.01, format="%.5f", key="riet_U",
+                                  help="FWHM² = U·tan²θ + V·tanθ + W")
+    with col_r3:
+        riet_V = st.number_input("Caglioti V", value=-0.005, format="%.5f", key="riet_V")
+        riet_W = st.number_input("Caglioti W", value=0.005, format="%.5f", key="riet_W")
+
+    bg_order = st.selectbox("Background-Polynom Ordnung", [0, 1, 2, 3, 4, 5], index=3,
+                             key="riet_bg_order")
+    bg_default = [sum(intens_raw) / len(intens_raw) * 0.5] + [0.0] * bg_order
+    bg_str = ",".join(f"{v:.2f}" for v in bg_default)
+    bg_input = st.text_input(f"Background-Koeffizienten (B₀...B{bg_order}, kommagetrennt)",
+                              value=bg_str, key="riet_bg")
+    try:
+        bg_coeffs = [float(x.strip()) for x in bg_input.split(",")]
+        if len(bg_coeffs) != bg_order + 1:
+            st.error(f"Brauche {bg_order + 1} Koeffizienten, habe {len(bg_coeffs)}")
+            bg_coeffs = None
+    except ValueError:
+        st.error("Ungültige Zahlen.")
+        bg_coeffs = None
+
+    # ─── Refinement Flags ───
+    st.markdown("#### 🔧 Verfeinerungsparameter")
+    col_rf1, col_rf2, col_rf3 = st.columns(3)
+    with col_rf1:
+        ref_scale = st.checkbox("Skalenfaktor", value=True)
+        ref_a = st.checkbox("a", value=False)
+        ref_b = st.checkbox("b", value=False)
+        ref_c = st.checkbox("c", value=False)
+    with col_rf2:
+        ref_zshift = st.checkbox("Zero-Shift", value=True)
+        ref_U = st.checkbox("Caglioti U", value=True)
+        ref_V = st.checkbox("Caglioti V", value=True)
+        ref_W = st.checkbox("Caglioti W", value=True)
+    with col_rf3:
+        ref_bg = st.checkbox("Background", value=True)
+
+    if st.button("🧪 Volles Pattern berechnen", type="primary", key="riet_calc"):
+        if bg_coeffs is None:
+            st.error("Background-Koeffizienten korrigieren.")
+        else:
+            with st.spinner("Berechne Reflexe und generiere Pattern..."):
+                # ── 1. Calculate all hkl reflections ──
+                hkl_refs_r = compute_structure_factors(
+                    crystal["atoms"], a, b, c, alpha, beta, gamma,
+                    wavelength, (riet_hkl, riet_hkl, riet_hkl))
+
+            if not hkl_refs_r:
+                st.error("Keine Reflexe berechnet.")
+            else:
+                st.success(f"✅ {len(hkl_refs_r)} Reflexe berechnet.")
+
+                from scipy.optimize import least_squares
+                from scipy.special import erf
+
+                def pseudo_voigt(x, mu, fwhm, eta=0.5):
+                    """Pseudo-Voigt: η·Lorentz + (1-η)·Gauss"""
+                    s = fwhm / (2 * math.sqrt(2 * math.log(2)))
+                    g = np.exp(-0.5 * ((x - mu) / s)**2) / (s * math.sqrt(2 * math.pi))
+                    l = fwhm / (2 * math.pi) / ((x - mu)**2 + (fwhm / 2)**2)
+                    return eta * l + (1 - eta) * g
+
+                def caglioti_fwhm(theta_deg, U, V, W):
+                    """FWHM² = U·tan²θ + V·tanθ + W"""
+                    t = math.tan(math.radians(theta_deg))
+                    fwhm2 = U * t**2 + V * t + W
+                    return math.sqrt(max(fwhm2, 0.001))
+
+                def calc_pattern(params, tt_obs, hkl_refs, fix_a, fix_b, fix_c):
+                    """Calculate full diffraction pattern from parameters."""
+                    idx = 0
+                    scale = params[idx]; idx += 1
+                    zshift = params[idx]; idx += 1
+                    U = params[idx]; idx += 1
+                    V = params[idx]; idx += 1
+                    W = params[idx]; idx += 1
+                    a_p = fix_a if len(params) <= idx + (bg_order+1) else params[idx]; idx += 1 if ref_a else 0
+                    b_p = fix_b if len(params) <= idx + (bg_order+1) else params[idx]; idx += 1 if ref_b else 0
+                    c_p = fix_c if len(params) <= idx + (bg_order+1) else params[idx]; idx += 1 if ref_c else 0
+                    bg_p = params[idx:idx + bg_order + 1]
+
+                    # Recalculate hkl with possibly refined lattice
+                    hkl_curr = []
+                    for r in hkl_refs:
+                        d = d_spacing(r["h"], r["k"], r["l"], a_p, b_p, c_p, alpha, beta, gamma)
+                        if d is None or d <= 0: continue
+                        stheta = wavelength / (2 * d)
+                        if abs(stheta) > 1: continue
+                        tt = 2 * math.degrees(math.asin(stheta))
+                        if tt < 5 or tt > 150: continue
+                        # Use original F from the structure factor calc (keep fixed)
+                        hkl_curr.append({"2θ": tt, "|F|²": r["|F|²"], "|F|": r["|F|"]})
+
+                    # Generate pattern
+                    y_calc = np.zeros_like(tt_obs, dtype=float)
+                    for r in hkl_curr:
+                        tt_pos = r["2θ"] + zshift
+                        fwhm_val = caglioti_fwhm(tt_pos, U, V, W)
+                        intens = r["|F|²"] * scale
+                        y_calc += intens * pseudo_voigt(tt_obs, tt_pos, fwhm_val)
+
+                    # Background: polynomial B₀ + B₁·x + B₂·x² + ...
+                    x_norm = (tt_obs - np.min(tt_obs)) / (np.max(tt_obs) - np.min(tt_obs) + 1e-10)
+                    bg = np.zeros_like(tt_obs)
+                    for i, b in enumerate(bg_p):
+                        bg += b * x_norm**i
+                    bg = np.maximum(bg, 0)
+
+                    return y_calc + bg
+
+                def residuals(params, tt_obs, y_obs, hkl_refs, fix_a, fix_b, fix_c):
+                    y_calc = calc_pattern(params, tt_obs, hkl_refs, fix_a, fix_b, fix_c)
+                    # Weighted residuals (1/sqrt(y_obs) weighting for Poisson stats)
+                    w = np.where(y_obs > 0, 1.0 / np.sqrt(y_obs + 1), 1.0)
+                    return (y_obs - y_calc) * w
+
+                # ─── Initial parameter vector ───
+                x0 = [riet_scale, riet_zshift, riet_U, riet_V, riet_W]
+                bounds_low = [0.001, -1.0, 0.0, -0.1, 0.0]
+                bounds_high = [1000, 1.0, 1.0, 0.1, 1.0]
+                if ref_a:
+                    x0.append(a); bounds_low.append(a*0.9); bounds_high.append(a*1.1)
+                if ref_b:
+                    x0.append(b); bounds_low.append(b*0.9); bounds_high.append(b*1.1)
+                if ref_c:
+                    x0.append(c); bounds_low.append(c*0.9); bounds_high.append(c*1.1)
+                x0 += bg_coeffs
+                bounds_low += [0.0] + [-1e6] * bg_order  # B0 >= 0, others free
+                bounds_high += [1e10] + [1e6] * bg_order
+
+                # Also add eta (mixing) as fixed for now
+                fix_a_v, fix_b_v, fix_c_v = a, b, c
+
+                # ─── Compute initial pattern ───
+                y_init = calc_pattern(x0, np.array(tt_raw), hkl_refs_r, fix_a_v, fix_b_v, fix_c_v)
+                res_init = np.array(intens_raw) - y_init
+                chi2_init = np.sum(res_init**2 / (np.array(intens_raw) + 1))
+
+                st.session_state["riet_hkl_refs"] = hkl_refs_r
+                st.session_state["riet_x0"] = x0
+                st.session_state["riet_y_init"] = y_init
+                st.session_state["riet_chi2_init"] = chi2_init
+
+                # ─── Difference Plot (initial) ───
+                st.markdown("### 📈 Initiales Pattern")
+                fig_ri, (ax_ri, ax_diff) = plt.subplots(2, 1, figsize=(12, 5), sharex=True,
+                                                         gridspec_kw={"height_ratios": [3, 1]})
+                ax_ri.plot(tt_raw, intens_raw, color="black", lw=0.8, label="I_obs")
+                ax_ri.plot(tt_raw, y_init, color="red", lw=0.8, label="I_calc (initial)")
+                ax_ri.set_ylabel("Intensität"); ax_ri.legend(fontsize=9); ax_ri.grid(True, alpha=0.3)
+                ax_ri.set_title(f"Rietveld-Plot (initial) — χ² = {chi2_init:.1f}", fontsize=11)
+
+                # Tick marks
+                for r in hkl_refs_r:
+                    ax_ri.axvline(r["2θ (°)"], color="green", lw=0.3, alpha=0.3, ls="--")
+
+                ax_diff.plot(tt_raw, res_init, color="gray", lw=0.6)
+                ax_diff.axhline(0, color="black", lw=0.5)
+                ax_diff.fill_between(tt_raw, res_init, 0, alpha=0.3, color="gray")
+                ax_diff.set_xlabel("2θ (°)"); ax_diff.set_ylabel("I_obs − I_calc")
+                ax_diff.set_title("Differenz", fontsize=10); ax_diff.grid(True, alpha=0.3)
+                fig_ri.tight_layout(); st.pyplot(fig_ri)
+
+                # R-factors
+                y_obs = np.array(intens_raw)
+                s_res = np.sum(res_init**2)
+                s_obs = np.sum(y_obs**2)
+                rp_init = np.sum(np.abs(res_init)) / np.sum(np.abs(y_obs)) * 100
+                rwp_init = math.sqrt(s_res / s_obs) * 100
+
+                col_rp1, col_rp2, col_rp3 = st.columns(3)
+                col_rp1.metric("Rₚ (%)", f"{rp_init:.2f}")
+                col_rp2.metric("R_wₚ (%)", f"{rwp_init:.2f}")
+                col_rp3.metric("χ²", f"{chi2_init:.1f}")
+
+                # ─── Refinement button ───
+                if st.button("⚡ Verfeinerung starten (Least-Squares)", key="riet_refine"):
+                    with st.spinner("Optimiere Parameter..."):
+                        # Determine which params to vary
+                        varying = [True] * 5  # scale, zshift, U, V, W
+                        if ref_a: varying.append(True)
+                        else: varying.append(False)
+                        if ref_b: varying.append(True)
+                        else: varying.append(False)
+                        if ref_c: varying.append(True)
+                        else: varying.append(False)
+                        # Background: if ref_bg, all bg coeffs vary
+                        varying += [ref_bg] * (bg_order + 1)
+
+                        # Only fit varying params
+                        x0_var = [x0[i] for i, v in enumerate(varying) if v]
+                        low_var = [bounds_low[i] for i, v in enumerate(varying) if v]
+                        high_var = [bounds_high[i] for i, v in enumerate(varying) if v]
+
+                        def resid_var(x_var, tt_obs, y_obs, hkl_refs, fix_a, fix_b, fix_c):
+                            # Reconstruct full param vector
+                            x_full = list(x0)  # copy
+                            j = 0
+                            for i in range(len(varying)):
+                                if varying[i]:
+                                    x_full[i] = x_var[j]
+                                    j += 1
+                            return residuals(x_full, tt_obs, y_obs, hkl_refs, fix_a, fix_b, fix_c)
+
+                        result = least_squares(
+                            resid_var, x0_var,
+                            bounds=(low_var, high_var),
+                            args=(np.array(tt_raw), np.array(intens_raw),
+                                  hkl_refs_r, fix_a_v, fix_b_v, fix_c_v),
+                            method="trf",
+                            max_nfev=200,
+                            ftol=1e-8,
+                            xtol=1e-8,
+                        )
+
+                        # Reconstruct full refined params
+                        x_ref_full = list(x0)
+                        j = 0
+                        for i in range(len(varying)):
+                            if varying[i]:
+                                x_ref_full[i] = result.x[j]
+                                j += 1
+
+                        # Show refined values
+                        st.success(f"✅ Verfeinerung konvergiert ({result.nfev} Iterationen)")
+
+                        # Compute final pattern
+                        y_ref = calc_pattern(x_ref_full, np.array(tt_raw), hkl_refs_r,
+                                             fix_a_v, fix_b_v, fix_c_v)
+                        res_ref = np.array(intens_raw) - y_ref
+                        chi2_ref = np.sum(res_ref**2 / (np.array(intens_raw) + 1))
+
+                        st.session_state["riet_y_ref"] = y_ref
+                        st.session_state["riet_x_ref"] = x_ref_full
+                        st.session_state["riet_chi2_ref"] = chi2_ref
+
+                        # ─── Refined Parameters ───
+                        st.markdown("#### 📋 Verfeinerte Parameter")
+                        param_names = ["Skalenfaktor", "Zero-Shift (°)", "Caglioti U", "Caglioti V", "Caglioti W"]
+                        param_init = x0[:5]
+                        param_ref = x_ref_full[:5]
+                        pdata = []
+                        for i, name in enumerate(param_names):
+                            pdata.append({"Parameter": name, "Initial": f"{param_init[i]:.6f}",
+                                          "Verfeinert": f"{param_ref[i]:.6f}"})
+                        if ref_a:
+                            pdata.append({"Parameter": "a (Å)", "Initial": f"{a:.4f}",
+                                          "Verfeinert": f"{x_ref_full[5 + (0 if ref_a else 0)]:.4f}"})
+                        if ref_b:
+                            bi = 5 + (1 if ref_a else 0)
+                            pdata.append({"Parameter": "b (Å)", "Initial": f"{b:.4f}",
+                                          "Verfeinert": f"{x_ref_full[bi]:.4f}"})
+                        if ref_c:
+                            ci = 5 + (1 if ref_a else 0) + (1 if ref_b else 0)
+                            pdata.append({"Parameter": "c (Å)", "Initial": f"{c:.4f}",
+                                          "Verfeinert": f"{x_ref_full[ci]:.4f}"})
+                        st.dataframe(pdata, use_container_width=True, hide_index=True)
+
+                        # R-factors
+                        s_res_r = np.sum(res_ref**2)
+                        s_obs_r = np.sum(y_obs**2)
+                        rp_ref = np.sum(np.abs(res_ref)) / np.sum(np.abs(y_obs)) * 100
+                        rwp_ref = math.sqrt(s_res_r / s_obs_r) * 100
+
+                        # ─── Final Pattern ───
+                        st.markdown("### 📈 Finales Pattern")
+                        fig_rf, (ax_rf, ax_df) = plt.subplots(2, 1, figsize=(12, 5), sharex=True,
+                                                               gridspec_kw={"height_ratios": [3, 1]})
+                        ax_rf.plot(tt_raw, intens_raw, color="black", lw=0.8, label="I_obs")
+                        ax_rf.plot(tt_raw, y_ref, color="red", lw=0.8, label="I_calc")
+                        for r in hkl_refs_r:
+                            ax_rf.axvline(r["2θ (°)"], color="green", lw=0.3, alpha=0.3, ls="--")
+                        ax_rf.set_ylabel("Intensität"); ax_rf.legend(fontsize=9); ax_rf.grid(True, alpha=0.3)
+                        ax_rf.set_title(f"Rietveld-Plot (verfeinert) — χ² = {chi2_ref:.1f}", fontsize=11)
+
+                        ax_df.plot(tt_raw, res_ref, color="gray", lw=0.6)
+                        ax_df.axhline(0, color="black", lw=0.5)
+                        ax_df.fill_between(tt_raw, res_ref, 0, alpha=0.3, color="gray")
+                        ax_df.set_xlabel("2θ (°)"); ax_df.set_ylabel("I_obs − I_calc")
+                        ax_df.set_title("Differenz", fontsize=10); ax_df.grid(True, alpha=0.3)
+                        fig_rf.tight_layout(); st.pyplot(fig_rf)
+
+                        # R-factor comparison
+                        col_rc1, col_rc2, col_rc3, col_rc4 = st.columns(4)
+                        col_rc1.metric("Rₚ (%)", f"{rp_ref:.2f}", delta=f"{rp_init - rp_ref:.2f}")
+                        col_rc2.metric("R_wₚ (%)", f"{rwp_ref:.2f}", delta=f"{rwp_init - rwp_ref:.2f}")
+                        col_rc3.metric("χ²", f"{chi2_ref:.1f}", delta=f"{chi2_init - chi2_ref:.1f}")
+                        col_rc4.metric("Red. χ²", f"{chi2_ref / (len(tt_raw) - len(result.x)):.2f}" if len(tt_raw) > len(result.x) else "—")
+
+                        # Bragg R-factor
+                        bragg_vals = []
+                        for r_ref, r_init in zip([0], [0]):  # placeholder
+                            pass
+                        # Bragg R = sum|I_obs - I_calc| / sum|I_obs| for each reflection
+                        bragg_r = rp_ref  # approximate
+                        st.metric("Bragg R (%) ≈ Rₚ", f"{bragg_r:.2f}")
 
 st.caption("FellX4 — mit HKL-Suche & Strukturfaktoren 🚀🔷")
