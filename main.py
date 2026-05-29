@@ -310,10 +310,12 @@ def compute_structure_factors(
     alpha: float, beta: float, gamma: float,
     wavelength: float,
     hkl_ranges: tuple[int, int, int] = (10, 10, 10),
+    min_f_sq_frac: float = 0.01,  # nur Reflexe >1% des max |F|²
 ):
-    """Compute F(hkl) for all hkl in range."""
+    """Compute F(hkl) for all hkl in range.
+    min_f_sq_frac: fraction of max |F|² below which reflections are dropped."""
     h_max, k_max, l_max = hkl_ranges
-    results = []
+    raw_results = []
     for h in range(-h_max, h_max + 1):
         for k in range(-k_max, k_max + 1):
             for l in range(-l_max, l_max + 1):
@@ -351,13 +353,22 @@ def compute_structure_factors(
 
                 F_sq = F_real**2 + F_imag**2
                 if F_sq > 0.001:
-                    results.append({
+                    raw_results.append({
                         "h": h, "k": k, "l": l,
                         "d (Å)": round(d, 4),
                         "2θ (°)": round(two_theta, 4),
                         "|F|²": round(F_sq, 2),
                         "|F|": round(math.sqrt(F_sq), 2),
                     })
+
+    # Filter: nur Reflexe > min_f_sq_frac * max |F|²
+    if raw_results:
+        max_f = max(r["|F|²"] for r in raw_results)
+        threshold = min_f_sq_frac * max_f
+        results = [r for r in raw_results if r["|F|²"] >= threshold]
+    else:
+        results = []
+
     results.sort(key=lambda r: r["d (Å)"], reverse=True)
     return results
 
@@ -472,7 +483,7 @@ with tab3:
         help="Cu Kα = 1.5406 Å, Mo Kα = 0.7107 Å"
     )
 
-    hkl_range = st.slider("hkl-Suchbereich", 1, 20, 8, help="Maximaler Index für h, k, l")
+    hkl_range = st.slider("hkl-Suchbereich", 1, 10, 5, help="Maximaler Index für h, k, l")
 
     crystal = None
     if cif_file is not None:
