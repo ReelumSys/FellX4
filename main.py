@@ -443,7 +443,8 @@ def plot_unit_cell(atoms, a, b, c, alpha, beta, gamma):
         (0,0,0), (1,0,0), (1,1,0), (0,1,0),
         (0,0,1), (1,0,1), (1,1,1), (0,1,1),
     ]
-    corners = [frac_to_cart(c, a, b, c, alpha, beta, gamma) for c in corners_frac]
+    corners = [frac_to_cart(corner, a, b, c, alpha, beta, gamma)
+               for corner in corners_frac]
 
     def edges_from_corners(c):
         """Return 12 edges of a hexahedron."""
