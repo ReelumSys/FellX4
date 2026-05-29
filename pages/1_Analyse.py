@@ -304,7 +304,8 @@ with col_info:
                 f"a={a:.3f} b={b:.3f} c={c:.3f}  ·  "
                 f"λ={wavelength:.4f} Å  ·  {len(peaks)} Peaks")
 with col_back:
-    st.page_link("main.py", label="← Neue Daten laden")
+    if st.button("← Neue Daten laden"):
+        st.switch_page("pages/home.py")
 
 # ──────────────────────────────────────────────
 #  TABS
