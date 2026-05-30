@@ -503,96 +503,199 @@ with tab6:
     st.markdown("### 🧪 Rietveld-Verfeinerung (vereinfacht)")
     st.markdown("Full-Pattern-Fitting: Startmodell aus CIF → berechne gesamtes Diffraktogramm → optimiere Parameter per Least-Squares.")
     st.caption("Für FullProf/GSAS: CIF + .xy separat verwenden. Hier: vereinfachtes Pseudo-Voigt-Profil + Background-Polynom.")
-
-    # --- Parameter-Initialisierung ---
+    
+    # Parameter-Initialisierung mit besseren Defaults und Grenzen
     if "riet_params" not in st.session_state:
         st.session_state.riet_params = {
-            'scale': 1.0, 'zshift': 0.0, 'U': 0.01, 'V': -0.005, 'W': 0.005,
-            'a': a, 'b': b, 'c': c, 'bg': [sum(intens_raw)/len(intens_raw)*0.5] + [0.0]*3
+            'scale': 1000.0,
+            'zshift': 0.0,
+            'U': 0.05,
+            'V': -0.01,
+            'W': 0.05,
+            'a': a,
+            'b': b,
+            'c': c,
+            'bg': [np.mean(intens_raw)] + [0.0] * 5
         }
-
+    
     p = st.session_state.riet_params
-
-    # --- UI Layout ---
+    
+    # Verbessertes UI-Layout
     col_r1, col_r2, col_r3 = st.columns(3)
     with col_r1:
-        riet_hkl = st.slider("hkl-Bereich", 1, 10, 5, key="riet_hkl")
-        p['scale'] = st.number_input("Skalenfaktor", value=p['scale'], format="%.4f")
+        riet_hkl = st.slider("hkl-Bereich", 1, 15, 7, key="riet_hkl")
+        p['scale'] = st.number_input("Skalenfaktor", value=float(p['scale']), format="%.2f", min_value=0.1, max_value=10000.0, step=10.0)
     with col_r2:
-        p['zshift'] = st.number_input("Zero-Shift (°)", value=p['zshift'], format="%.4f")
-        p['U'] = st.number_input("Caglioti U", value=p['U'], format="%.5f")
+        p['zshift'] = st.number_input("Zero-Shift (°)", value=float(p['zshift']), format="%.4f", min_value=-1.0, max_value=1.0, step=0.001)
+        p['U'] = st.number_input("Caglioti U", value=float(p['U']), format="%.5f", min_value=0.0, max_value=1.0, step=0.001)
     with col_r3:
-        p['V'] = st.number_input("Caglioti V", value=p['V'], format="%.5f")
-        p['W'] = st.number_input("Caglioti W", value=p['W'], format="%.5f")
-
-    bg_order = st.selectbox("Background-Polynom Ordnung", [0,1,2,3,4,5], index=3, key="riet_bg_order")
+        p['V'] = st.number_input("Caglioti V", value=float(p['V']), format="%.5f", min_value=-1.0, max_value=1.0, step=0.001)
+        p['W'] = st.number_input("Caglioti W", value=float(p['W']), format="%.5f", min_value=0.0, max_value=1.0, step=0.001)
     
-    # Background handles
+    # Lattice Parameter verfeinern
+    st.markdown("#### 🔧 Lattice Parameter Verfeinerung")
+    col_lat1, col_lat2, col_lat3 = st.columns(3)
+    with col_lat1:
+        p['a'] = st.number_input("a (Å)", value=float(p['a']), format="%.5f", step=0.0001)
+        refine_a = st.checkbox("a verfeinern", value=True)
+    with col_lat2:
+        p['b'] = st.number_input("b (Å)", value=float(p['b']), format="%.5f", step=0.0001)
+        refine_b = st.checkbox("b verfeinern", value=True)
+    with col_lat3:
+        p['c'] = st.number_input("c (Å)", value=float(p['c']), format="%.5f", step=0.0001)
+        refine_c = st.checkbox("c verfeinern", value=True)
+
+    # Background-Ordnung
+    bg_order = st.selectbox("Background-Polynom Ordnung", [0, 1, 2, 3, 4, 5, 6], index=3, key="riet_bg_order")
+    
+    # Background-Koeffizienten
     bg_str = ",".join(f"{v:.2f}" for v in p['bg'][:bg_order+1])
     bg_input = st.text_input(f"Background-Koeffizienten (B₀...B{bg_order})", value=bg_str)
     try:
         bg_vals = [float(x.strip()) for x in bg_input.split(",")]
         if len(bg_vals) == bg_order + 1:
-            p['bg'] = bg_vals + [0.0]*(len(p['bg']) - len(bg_vals))
+            p['bg'] = bg_vals + [0.0] * (len(p['bg']) - len(bg_vals))
     except ValueError:
         st.error("Ungültige Background-Werte")
 
-    st.markdown("#### 🔧 Verfeinerung")
+    st.markdown("#### 🔧 Verfeinerungseinstellungen")
     col_rf1, col_rf2, col_rf3 = st.columns(3)
     with col_rf1:
         ref_scale = st.checkbox("Skalenfaktor", value=True)
-        ref_a = st.checkbox("a", value=False)
-        ref_b = st.checkbox("b", value=False)
-        ref_c = st.checkbox("c", value=False)
-    with col_rf2:
         ref_zshift = st.checkbox("Zero-Shift", value=True)
+    with col_rf2:
         ref_U = st.checkbox("Caglioti U", value=True)
         ref_V = st.checkbox("Caglioti V", value=True)
         ref_W = st.checkbox("Caglioti W", value=True)
     with col_rf3:
         ref_bg = st.checkbox("Background", value=True)
 
-    # --- Calculation Logik ---
+    # Verbesserte Calculation Logik
     if st.button("🧪 Pattern berechnen & Fit starten", type="primary"):
         with st.spinner("Optimiere..."):
-            hkl_refs_r = compute_structure_factors(crystal["atoms"], p['a'], p['b'], p['c'], alpha, beta, gamma, wavelength, (riet_hkl, riet_hkl, riet_hkl))
+            # HKL-Reflexe berechnen
+            hkl_refs_r = compute_structure_factors(
+                crystal["atoms"], 
+                p['a'], p['b'], p['c'], 
+                alpha, beta, gamma, 
+                wavelength, 
+                (riet_hkl, riet_hkl, riet_hkl)
+            )
             
-            # Definieren der variablen Parameter (Flat Vector)
+            # Variablen Parameter definieren
             var_keys = []
             x0_var = []
+            bounds = []
             
-            if ref_scale: var_keys.append('scale'); x0_var.append(p['scale'])
-            if ref_zshift: var_keys.append('zshift'); x0_var.append(p['zshift'])
-            if ref_U: var_keys.append('U'); x0_var.append(p['U'])
-            if ref_V: var_keys.append('V'); x0_var.append(p['V'])
-            if ref_W: var_keys.append('W'); x0_var.append(p['W'])
-            if ref_a: var_keys.append('a'); x0_var.append(p['a'])
-            if ref_b: var_keys.append('b'); x0_var.append(p['b'])
-            if ref_c: var_keys.append('c'); x0_var.append(p['c'])
+            if ref_scale:
+                var_keys.append('scale')
+                x0_var.append(p['scale'])
+                bounds.append((0.1, 10000.0))
+            if ref_zshift:
+                var_keys.append('zshift')
+                x0_var.append(p['zshift'])
+                bounds.append((-1.0, 1.0))
+            if ref_U:
+                var_keys.append('U')
+                x0_var.append(p['U'])
+                bounds.append((0.0, 1.0))
+            if ref_V:
+                var_keys.append('V')
+                x0_var.append(p['V'])
+                bounds.append((-1.0, 1.0))
+            if ref_W:
+                var_keys.append('W')
+                x0_var.append(p['W'])
+                bounds.append((0.0, 1.0))
+            if refine_a:
+                var_keys.append('a')
+                x0_var.append(p['a'])
+                bounds.append((0.1, 20.0))
+            if refine_b:
+                var_keys.append('b')
+                x0_var.append(p['b'])
+                bounds.append((0.1, 20.0))
+            if refine_c:
+                var_keys.append('c')
+                x0_var.append(p['c'])
+                bounds.append((0.1, 20.0))
             if ref_bg:
                 for i in range(bg_order + 1):
                     var_keys.append(f'bg{i}')
                     x0_var.append(p['bg'][i])
+                    bounds.append((None, None))  # Keine Grenzen für Background-Koeffizienten
 
+            # Verbesserte Zielfunktion
             def objective(x_var):
-                return riet_residuals(x_var, var_keys, p, np.array(tt_raw), np.array(intens_raw), hkl_refs_r, bg_order, wavelength, alpha, beta, gamma)
+                # Map flat vector x_var back to the dictionary params
+                params = p.copy()
+                for i, key in enumerate(var_keys):
+                    if key.startswith('bg'):
+                        # Background keys are handled as bg_coeffs list
+                        bg_idx = int(key[2:])
+                        if 'bg' not in params or not isinstance(params['bg'], list):
+                            params['bg'] = [0.0] * (bg_order + 1)
+                        params['bg'][bg_idx] = x_var[i]
+                    else:
+                        params[key] = x_var[i]
+                
+                y_calc = riet_calc_pattern(params, np.array(tt_raw), hkl_refs_r, bg_order, wavelength, alpha, beta, gamma)
+                y_obs = np.array(intens_raw)
+                
+                # Verbesserte Gewichtung
+                w = 1.0 / np.sqrt(np.maximum(y_obs, 1.0))
+                residuals = (y_obs - y_calc) * w
+                
+                # Regularisierung für Background-Koeffizienten
+                bg_reg = 0.0
+                if ref_bg:
+                    for i in range(bg_order + 1):
+                        bg_reg += 0.001 * params['bg'][i]**2
+                
+                return np.sum(residuals**2) + bg_reg
 
-            res = least_squares(objective, x0_var, method="trf", max_nfev=200)
-            
-            # Update session state
-            final_p = p.copy()
-            for i, key in enumerate(var_keys):
-                if key.startswith('bg'):
-                    final_p['bg'][int(key[2:])] = res.x[i]
-                else:
-                    final_p[key] = res.x[i]
-            
-            st.session_state.riet_params = final_p
-            st.session_state.riet_hkl_refs = hkl_refs_r
-            st.session_state.riet_y_calc = riet_calc_pattern(final_p, np.array(tt_raw), hkl_refs_r, bg_order, wavelength, alpha, beta, gamma)
-            st.session_state.riet_res = res
-            st.rerun()
+            # Optimize mit verbesserten Einstellungen
+            if len(x0_var) > 0:
+                try:
+                    res = least_squares(
+                        objective, 
+                        x0_var, 
+                        bounds=[b[0] if b[0] is not None else -np.inf for b in bounds],
+                                [b[1] if b[1] is not None else np.inf for b in bounds],
+                        method="trf",
+                        max_nfev=500,
+                        ftol=1e-6,
+                        xtol=1e-6
+                    )
+                    
+                    # Update session state
+                    final_p = p.copy()
+                    for i, key in enumerate(var_keys):
+                        if key.startswith('bg'):
+                            final_p['bg'][int(key[2:])] = res.x[i]
+                        else:
+                            final_p[key] = res.x[i]
+                    
+                    st.session_state.riet_params = final_p
+                    st.session_state.riet_hkl_refs = hkl_refs_r
+                    st.session_state.riet_y_calc = riet_calc_pattern(
+                        final_p, 
+                        np.array(tt_raw), 
+                        hkl_refs_r, 
+                        bg_order, 
+                        wavelength, 
+                        alpha, 
+                        beta, 
+                        gamma
+                    )
+                    st.session_state.riet_res = res
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Fehler in der Verfeinerung: {str(e)}")
+            else:
+                st.warning("Keine Parameter zur Verfeinerung ausgewählt.")
 
+    # Ergebnisse anzeigen
     if "riet_y_calc" in st.session_state:
         y_calc = st.session_state.riet_y_calc
         y_obs = np.array(intens_raw)
@@ -601,15 +704,26 @@ with tab6:
         fig_r, (ax_r, ax_d) = plt.subplots(2, 1, figsize=(12, 5), sharex=True, gridspec_kw={"height_ratios": [3, 1]})
         ax_r.plot(tt_raw, y_obs, color="black", lw=0.8, label="Obs")
         ax_r.plot(tt_raw, y_calc, color="red", lw=0.8, label="Calc")
-        ax_r.legend(); ax_r.grid(True, alpha=0.3)
+        ax_r.legend()
+        ax_r.grid(True, alpha=0.3)
         ax_d.plot(tt_raw, residuals, color="gray", lw=0.6)
         ax_d.axhline(0, color="black", lw=0.5)
         ax_d.fill_between(tt_raw, residuals, 0, alpha=0.3, color="gray")
-        fig_r.tight_layout(); st.pyplot(fig_r)
+        ax_d.set_xlabel("2θ (°)")
+        ax_d.set_ylabel("Differenz")
+        fig_r.tight_layout()
+        st.pyplot(fig_r)
         
-        # R-Factors
+        # Verbesserte R-Faktoren
         rp = np.sum(np.abs(residuals)) / np.sum(np.abs(y_obs)) * 100
         rwp = np.sqrt(np.sum(residuals**2) / np.sum(y_obs**2)) * 100
-        st.columns(3)[0].metric("Rp (%)", f"{rp:.2f}"); st.columns(3)[1].metric("Rwp (%)", f"{rwp:.2f}")
+        chi_sq = np.sum((residuals**2) / np.maximum(y_obs, 1.0))
+        chi_sq_red = chi_sq / (len(y_obs) - len(st.session_state.riet_res.x))
+        
+        col_rp, col_rwp, col_chi, col_chired = st.columns(4)
+        col_rp.metric("Rp (%)", f"{rp:.2f}")
+        col_rwp.metric("Rwp (%)", f"{rwp:.2f}")
+        col_chi.metric("χ²", f"{chi_sq:.2f}")
+        col_chired.metric("χ²_red", f"{chi_sq_red:.2f}")
 
 st.caption("FellX4 — mit HKL-Suche & Strukturfaktoren 🚀🔷")
